@@ -1,26 +1,34 @@
 import pickle
 import streamlit as st
 import requests
+import os
+
+# ---------------------- FUNCTIONS ----------------------
 
 def fetch_poster(movie_id):
+    """Fetch movie poster from TMDB API."""
     url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key=8265bd1679663a7ea12ac168da84d2e8&language=en-US"
-    response = requests.get(url)
-
-    if response.status_code != 200:
-        return None  # return empty if API fails
-
-    data = response.json()
-    poster_path = data.get('poster_path')
-
-    if poster_path:
-        full_path = "https://image.tmdb.org/t/p/w500/" + poster_path
-        return full_path
-    else:
+    
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        poster_path = data.get('poster_path')
+        if poster_path:
+            return "https://image.tmdb.org/t/p/w500/" + poster_path
+        else:
+            return None
+    except requests.exceptions.RequestException:
         return None
 
-
 def recommend(movie):
-    index = movies[movies['title'] == movie].index[0]
+    """Return top 5 recommended movies and their posters."""
+    try:
+        index = movies[movies['title'] == movie].index[0]
+    except IndexError:
+        st.error("Movie not found in database.")
+        return [], []
+
     distances = sorted(
         list(enumerate(similarity[index])),
         key=lambda x: x[1],
@@ -37,29 +45,36 @@ def recommend(movie):
 
     return recommended_movie_names, recommended_movie_posters
 
-
 # ---------------------- STREAMLIT APP ----------------------
-st.header('Movie Recommender System')
 
-movies = pickle.load(open('model/movie_list.pkl', 'rb'))
-similarity = pickle.load(open('model/similarity.pkl', 'rb'))
+st.set_page_config(page_title="Movie Recommender", layout="wide")
+st.header('🎬 Movie Recommender System')
 
-movie_list = movies['title'].values
+# Check if model files exist
+if not os.path.exists('model/movie_list.pkl') or not os.path.exists('model/similarity.pkl'):
+    st.error("Required model files are missing in the 'model/' folder. Please add 'movie_list.pkl' and 'similarity.pkl'.")
+else:
+    # Load models
+    movies = pickle.load(open('model/movie_list.pkl', 'rb'))
+    similarity = pickle.load(open('model/similarity.pkl', 'rb'))
 
-selected_movie = st.selectbox(
-    "Type or select a movie from the dropdown",
-    movie_list
-)
+    movie_list = movies['title'].values
+    selected_movie = st.selectbox(
+        "Type or select a movie from the dropdown",
+        movie_list
+    )
 
-if st.button('Show Recommendation'):
-    recommended_movie_names, recommended_movie_posters = recommend(selected_movie)
+    if st.button('Show Recommendation'):
+        recommended_movie_names, recommended_movie_posters = recommend(selected_movie)
 
-    cols = st.columns(5)
-
-    for i in range(5):
-        with cols[i]:
-            st.text(recommended_movie_names[i])
-            if recommended_movie_posters[i]:
-                st.image(recommended_movie_posters[i])
-            else:
-                st.write("Poster not available")
+        if recommended_movie_names:
+            cols = st.columns(5)
+            for i in range(5):
+                with cols[i]:
+                    st.text(recommended_movie_names[i])
+                    if recommended_movie_posters[i]:
+                        st.image(recommended_movie_posters[i])
+                    else:
+                        st.write("Poster not available")
+        else:
+            st.warning("No recommendations found.")
