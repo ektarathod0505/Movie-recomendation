@@ -6,77 +6,68 @@ import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-# ---------------------- POSTER FUNCTION ----------------------
+# ---------------- POSTER FUNCTION ----------------
 
 def fetch_poster(movie_id):
-    """Fetch movie poster from TMDB API"""
     url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key=8265bd1679663a7ea12ac168da84d2e8&language=en-US"
 
     try:
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
-
+        data = requests.get(url).json()
         poster_path = data.get("poster_path")
 
         if poster_path:
             return "https://image.tmdb.org/t/p/w500/" + poster_path
         else:
             return None
-
-    except requests.exceptions.RequestException:
+    except:
         return None
 
 
-# ---------------------- DATA LOADING ----------------------
+# ---------------- DATA LOADING ----------------
 
 @st.cache_resource
 def load_data():
 
-    # Load saved model
     if os.path.exists("model/movie_list.pkl") and os.path.exists("model/similarity.pkl"):
-        movies = pickle.load(open("model/movie_list.pkl", "rb"))
-        similarity = pickle.load(open("model/similarity.pkl", "rb"))
+        movies = pickle.load(open("model/movie_list.pkl","rb"))
+        similarity = pickle.load(open("model/similarity.pkl","rb"))
         return movies, similarity
 
-    # Build model from CSV
     elif os.path.exists("movies.csv"):
 
         movies = pd.read_csv("movies.csv")
 
-        # Clean text columns
-        features = []
-
-        for col in ["genres", "keywords", "overview", "cast", "director"]:
+        # Clean columns
+        for col in ["genres","keywords","overview","cast","director"]:
             if col in movies.columns:
                 movies[col] = movies[col].fillna("")
-                features.append(col)
 
-        # Create tags
-        if features:
-            movies["tags"] = movies[features].apply(
-                lambda row: " ".join(row.values.astype(str)), axis=1
-            )
-        else:
-            movies["tags"] = movies["title"]
+        # Create better tags
+        movies["tags"] = (
+            movies.get("genres","") + " " +
+            movies.get("keywords","") + " " +
+            movies.get("overview","") + " " +
+            movies.get("cast","") + " " +
+            movies.get("director","")
+        )
 
         movies["tags"] = movies["tags"].str.lower()
 
-        # TF-IDF Vectorizer
+        # TF-IDF Vectorization
         tfidf = TfidfVectorizer(
-            max_features=10000,
+            max_features=15000,
             stop_words="english",
             ngram_range=(1,2)
         )
 
-        vectors = tfidf.fit_transform(movies["tags"]).toarray()
+        vectors = tfidf.fit_transform(movies["tags"])
 
         similarity = cosine_similarity(vectors)
 
         os.makedirs("model", exist_ok=True)
 
-        pickle.dump(movies, open("model/movie_list.pkl", "wb"))
-        pickle.dump(similarity, open("model/similarity.pkl", "wb"))
+        pickle.dump(movies, open("model/movie_list.pkl","wb"))
+        pickle.dump(similarity, open("model/similarity.pkl","wb"))
 
         return movies, similarity
 
@@ -84,13 +75,13 @@ def load_data():
         return None, None
 
 
-# ---------------------- RECOMMEND FUNCTION ----------------------
+# ---------------- RECOMMEND FUNCTION ----------------
 
 def recommend(movie, movies, similarity):
 
     try:
         index = movies[movies["title"] == movie].index[0]
-    except IndexError:
+    except:
         st.error("Movie not found")
         return [], []
 
@@ -100,52 +91,49 @@ def recommend(movie, movies, similarity):
         key=lambda x: x[1]
     )
 
-    recommended_movies = []
-    recommended_posters = []
+    names = []
+    posters = []
 
     for i in distances[1:6]:
 
-        movie_row = movies.iloc[i[0]]
+        row = movies.iloc[i[0]]
 
-        # Detect ID column
-        if "movie_id" in movies.columns:
-            movie_id = movie_row["movie_id"]
-        elif "id" in movies.columns:
-            movie_id = movie_row["id"]
+        if "id" in movies.columns:
+            movie_id = row["id"]
+        elif "movie_id" in movies.columns:
+            movie_id = row["movie_id"]
         elif "movieId" in movies.columns:
-            movie_id = movie_row["movieId"]
+            movie_id = row["movieId"]
         else:
             movie_id = None
 
-        recommended_movies.append(movie_row["title"])
+        names.append(row["title"])
 
         if movie_id:
-            poster = fetch_poster(movie_id)
+            posters.append(fetch_poster(movie_id))
         else:
-            poster = None
+            posters.append(None)
 
-        recommended_posters.append(poster)
-
-    return recommended_movies, recommended_posters
+    return names, posters
 
 
-# ---------------------- STREAMLIT APP ----------------------
+# ---------------- STREAMLIT UI ----------------
 
 st.set_page_config(page_title="Movie Recommender", layout="wide")
 
 st.title("🎬 Movie Recommendation System")
 
-with st.spinner("Loading movie dataset..."):
+with st.spinner("Loading movies..."):
     movies, similarity = load_data()
 
 if movies is None:
 
     st.error("Dataset not found.")
-    st.info("Upload movies.csv or model/movie_list.pkl")
+    st.info("Please upload movies.csv")
 
 else:
 
-    st.success(f"Loaded {len(movies)} movies successfully!")
+    st.success(f"{len(movies)} movies loaded successfully!")
 
     movie_list = movies["title"].values
 
@@ -158,20 +146,15 @@ else:
 
         names, posters = recommend(selected_movie, movies, similarity)
 
-        if names:
+        cols = st.columns(5)
 
-            cols = st.columns(5)
+        for i in range(5):
 
-            for i in range(5):
+            with cols[i]:
 
-                with cols[i]:
+                st.text(names[i])
 
-                    st.text(names[i])
-
-                    if posters[i]:
-                        st.image(posters[i])
-                    else:
-                        st.write("Poster not available")
-
-        else:
-            st.warning("No recommendations found.")
+                if posters[i]:
+                    st.image(posters[i])
+                else:
+                    st.write("Poster not available")
