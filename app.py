@@ -1,160 +1,65 @@
-import pickle
-import streamlit as st
-import requests
-import os
 import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
+import ast
+import pickle
+import os
+from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-# ---------------- POSTER FUNCTION ----------------
+# -------- Load Dataset --------
+df = pd.read_csv("movies.csv")
 
-def fetch_poster(movie_id):
-    url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key=8265bd1679663a7ea12ac168da84d2e8&language=en-US"
-
+# -------- Parse List Columns --------
+def parse_names(val, top=5):
     try:
-        data = requests.get(url).json()
-        poster_path = data.get("poster_path")
-
-        if poster_path:
-            return "https://image.tmdb.org/t/p/w500/" + poster_path
-        else:
-            return None
+        items = ast.literal_eval(val)
+        return [i['name'].replace(' ', '') for i in items[:top] if 'name' in i]
     except:
-        return None
+        return []
 
+df['genres_clean']   = df['genres'].apply(parse_names)
+df['keywords_clean'] = df['keywords'].apply(parse_names)
+df['overview_clean'] = df['overview'].fillna('').apply(lambda x: x.split())
 
-# ---------------- DATA LOADING ----------------
+# -------- Build Tags --------
+# genres (3x weight) + keywords (2x) + overview
+# NO cast/crew — they add noise and hurt recommendations
+df['tags'] = (
+    df['genres_clean']   * 3 +
+    df['keywords_clean'] * 2 +
+    df['overview_clean']
+)
+df['tags'] = df['tags'].apply(lambda x: ' '.join(x).lower())
 
-@st.cache_resource
-def load_data():
+# -------- Prepare Final DataFrame --------
+movies = df[['id', 'title', 'tags']].rename(columns={'id': 'movie_id'})
+movies = movies.dropna(subset=['title'])
+movies = movies[movies['tags'].str.strip() != ''].reset_index(drop=True)
 
-    if os.path.exists("model/movie_list.pkl") and os.path.exists("model/similarity.pkl"):
-        movies = pickle.load(open("model/movie_list.pkl","rb"))
-        similarity = pickle.load(open("model/similarity.pkl","rb"))
-        return movies, similarity
+print(f"Total movies: {len(movies)}")
 
-    elif os.path.exists("movies.csv"):
+# -------- Vectorize --------
+cv = CountVectorizer(max_features=5000, stop_words='english')
+vectors = cv.fit_transform(movies['tags'])
+similarity = cosine_similarity(vectors)
 
-        movies = pd.read_csv("movies.csv")
-
-        # Clean columns
-        for col in ["genres","keywords","overview","cast","director"]:
-            if col in movies.columns:
-                movies[col] = movies[col].fillna("")
-
-        # Create better tags
-        movies["tags"] = (
-            movies.get("genres","") + " " +
-            movies.get("keywords","") + " " +
-            movies.get("overview","") + " " +
-            movies.get("cast","") + " " +
-            movies.get("director","")
-        )
-
-        movies["tags"] = movies["tags"].str.lower()
-
-        # TF-IDF Vectorization
-        tfidf = TfidfVectorizer(
-            max_features=15000,
-            stop_words="english",
-            ngram_range=(1,2)
-        )
-
-        vectors = tfidf.fit_transform(movies["tags"])
-
-        similarity = cosine_similarity(vectors)
-
-        os.makedirs("model", exist_ok=True)
-
-        pickle.dump(movies, open("model/movie_list.pkl","wb"))
-        pickle.dump(similarity, open("model/similarity.pkl","wb"))
-
-        return movies, similarity
-
-    else:
-        return None, None
-
-
-# ---------------- RECOMMEND FUNCTION ----------------
-
-def recommend(movie, movies, similarity):
-
+# -------- Test --------
+def test_recommend(title):
     try:
-        index = movies[movies["title"] == movie].index[0]
+        idx = movies[movies['title'] == title].index[0]
+        distances = sorted(list(enumerate(similarity[idx])), reverse=True, key=lambda x: x[1])
+        print(f"\nRecommendations for '{title}':")
+        for i in distances[1:6]:
+            print(f"  - {movies.iloc[i[0]]['title']}")
     except:
-        st.error("Movie not found")
-        return [], []
+        print(f"Movie '{title}' not found")
 
-    distances = sorted(
-        list(enumerate(similarity[index])),
-        reverse=True,
-        key=lambda x: x[1]
-    )
+test_recommend("Spider-Man 3")
+test_recommend("Avatar")
+test_recommend("The Dark Knight")
 
-    names = []
-    posters = []
+# -------- Save Model --------
+os.makedirs("model", exist_ok=True)
+pickle.dump(movies[['movie_id', 'title']], open("model/movie_list.pkl", "wb"))
+pickle.dump(similarity, open("model/similarity.pkl", "wb"))
 
-    for i in distances[1:6]:
-
-        row = movies.iloc[i[0]]
-
-        if "id" in movies.columns:
-            movie_id = row["id"]
-        elif "movie_id" in movies.columns:
-            movie_id = row["movie_id"]
-        elif "movieId" in movies.columns:
-            movie_id = row["movieId"]
-        else:
-            movie_id = None
-
-        names.append(row["title"])
-
-        if movie_id:
-            posters.append(fetch_poster(movie_id))
-        else:
-            posters.append(None)
-
-    return names, posters
-
-
-# ---------------- STREAMLIT UI ----------------
-
-st.set_page_config(page_title="Movie Recommender", layout="wide")
-
-st.title("🎬 Movie Recommendation System")
-
-with st.spinner("Loading movies..."):
-    movies, similarity = load_data()
-
-if movies is None:
-
-    st.error("Dataset not found.")
-    st.info("Please upload movies.csv")
-
-else:
-
-    st.success(f"{len(movies)} movies loaded successfully!")
-
-    movie_list = movies["title"].values
-
-    selected_movie = st.selectbox(
-        "Select a movie",
-        movie_list
-    )
-
-    if st.button("Show Recommendation"):
-
-        names, posters = recommend(selected_movie, movies, similarity)
-
-        cols = st.columns(5)
-
-        for i in range(5):
-
-            with cols[i]:
-
-                st.text(names[i])
-
-                if posters[i]:
-                    st.image(posters[i])
-                else:
-                    st.write("Poster not available")
+print("\nModel saved to model/ folder!")
