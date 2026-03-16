@@ -4,7 +4,7 @@ import os
 import ast
 import numpy as np
 import pandas as pd
-from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 st.set_page_config(page_title="Movie Recommender", layout="wide")
@@ -15,22 +15,21 @@ def load_data():
     csv_path = os.path.join(BASE_DIR, "movies.csv")
     df = pd.read_csv(csv_path)
 
-    def parse_names(val, top=8):
+    def parse_names(val, top=10):
         try:
             items = ast.literal_eval(val)
             return [i['name'].replace(' ', '') for i in items[:top] if 'name' in i]
         except:
             return []
 
-    df['genres_clean']   = df['genres'].apply(lambda x: parse_names(x, top=5))
-    df['keywords_clean'] = df['keywords'].apply(lambda x: parse_names(x, top=8))
+    df['genres_clean']   = df['genres'].apply(lambda x: parse_names(x, 5))
+    df['keywords_clean'] = df['keywords'].apply(lambda x: parse_names(x, 10))
     df['overview_clean'] = df['overview'].fillna('').apply(lambda x: x.split())
 
-    # genres 4x, keywords 3x, overview 1x
     df['tags'] = (
-        df['genres_clean']   * 4 +
-        df['keywords_clean'] * 3 +
-        df['overview_clean'] * 1
+        df['genres_clean']   * 3 +
+        df['keywords_clean'] * 5 +
+        df['overview_clean'] * 2
     )
     df['tags'] = df['tags'].apply(lambda x: ' '.join(x).lower())
 
@@ -38,15 +37,13 @@ def load_data():
     movies = movies.dropna(subset=['title'])
     movies = movies[movies['tags'].str.strip() != ''].reset_index(drop=True)
 
-    # Popularity score (Bayesian weighted)
     movies['vote_count']   = pd.to_numeric(movies['vote_count'],   errors='coerce').fillna(0)
     movies['vote_average'] = pd.to_numeric(movies['vote_average'], errors='coerce').fillna(0)
     movies['pop_score']    = (movies['vote_average'] * movies['vote_count']) / (movies['vote_count'] + 500)
     movies['pop_norm']     = movies['pop_score'] / movies['pop_score'].max()
 
-    # Content similarity
-    cv = CountVectorizer(max_features=5000, stop_words='english')
-    vectors = cv.fit_transform(movies['tags'])
+    tfidf = TfidfVectorizer(max_features=8000, stop_words='english', ngram_range=(1, 2))
+    vectors = tfidf.fit_transform(movies['tags'])
     similarity = cosine_similarity(vectors)
 
     return movies, similarity
@@ -64,22 +61,17 @@ def fetch_poster(movie_id):
 
 def recommend(movie, movies, similarity):
     index = movies[movies['title'] == movie].index[0]
-
-    # Blend 85% content similarity + 15% popularity
-    sim_scores  = similarity[index].copy()
-    pop_scores  = movies['pop_norm'].values
-    final_scores = 0.85 * sim_scores + 0.15 * pop_scores
-    final_scores[index] = 0  # exclude self
-
+    sim_scores   = similarity[index].copy()
+    pop_scores   = movies['pop_norm'].values
+    final_scores = 0.80 * sim_scores + 0.20 * pop_scores
+    final_scores[index] = 0
     top5 = np.argsort(final_scores)[::-1][:5]
-
     names, posters = [], []
     for i in top5:
         names.append(movies.iloc[i]['title'])
         posters.append(fetch_poster(movies.iloc[i]['movie_id']))
     return names, posters
 
-# ---------------- UI ----------------
 st.title("🎬 Movie Recommendation System")
 
 with st.spinner("Loading movies..."):
