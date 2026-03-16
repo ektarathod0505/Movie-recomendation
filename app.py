@@ -9,6 +9,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 st.set_page_config(page_title="Movie Recommender", layout="wide")
 
+FAMILY_GENRES = {'Animation', 'Family'}
+
 @st.cache_resource
 def load_data():
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -22,18 +24,19 @@ def load_data():
         except:
             return []
 
-    df['genres_clean']   = df['genres'].apply(lambda x: parse_names(x, 5))
+    df['genres_list']    = df['genres'].apply(lambda x: parse_names(x, 5))
     df['keywords_clean'] = df['keywords'].apply(lambda x: parse_names(x, 10))
     df['overview_clean'] = df['overview'].fillna('').apply(lambda x: x.split())
 
     df['tags'] = (
-        df['genres_clean']   * 3 +
+        df['genres_list']    * 3 +
         df['keywords_clean'] * 5 +
         df['overview_clean'] * 2
     )
     df['tags'] = df['tags'].apply(lambda x: ' '.join(x).lower())
 
     movies = df[['id', 'title', 'tags', 'vote_average', 'vote_count']].rename(columns={'id': 'movie_id'})
+    movies['genres_list'] = df['genres_list']
     movies = movies.dropna(subset=['title'])
     movies = movies[movies['tags'].str.strip() != ''].reset_index(drop=True)
 
@@ -61,11 +64,22 @@ def fetch_poster(movie_id):
 
 def recommend(movie, movies, similarity):
     index = movies[movies['title'] == movie].index[0]
+    source_genres = set(movies.iloc[index]['genres_list'])
+    is_family = bool(source_genres & FAMILY_GENRES)
+
     sim_scores   = similarity[index].copy()
     pop_scores   = movies['pop_norm'].values
     final_scores = 0.80 * sim_scores + 0.20 * pop_scores
+
+    # Penalize Animation/Family genre mismatch heavily
+    for i, row in movies.iterrows():
+        cand_is_family = bool(set(row['genres_list']) & FAMILY_GENRES)
+        if is_family != cand_is_family:
+            final_scores[i] *= 0.3
+
     final_scores[index] = 0
     top5 = np.argsort(final_scores)[::-1][:5]
+
     names, posters = [], []
     for i in top5:
         names.append(movies.iloc[i]['title'])
